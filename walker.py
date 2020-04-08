@@ -42,7 +42,7 @@ class Memory:
         self.rewards = []
         self.dones = []
     
-    def clear_memory(self):
+    def clear(self):
         del self.actions[:]
         del self.states[:]
         del self.log_probs[:]
@@ -61,9 +61,9 @@ class A2CNet(nn.Module):
         action_layers = []
         action_layers += [nn.Linear(state_space_dim,64)]
         action_layers += [nn.ReLU()]
-        action_layers += [nn.Linear(64,64)]
+        action_layers += [nn.Linear(64,32)]
         action_layers += [nn.ReLU()]
-        action_layers += [nn.Linear(64,self.action_space_dim)]
+        action_layers += [nn.Linear(32,self.action_space_dim)]
         action_layers += [nn.Softmax(dim=-1)]
         
         self.actor=nn.Sequential(*action_layers)
@@ -71,9 +71,9 @@ class A2CNet(nn.Module):
         critic_layers = []
         critic_layers += [nn.Linear(self.state_space_dim,64)]
         critic_layers += [nn.ReLU()]
-        critic_layers += [nn.Linear(64,64)]
+        critic_layers += [nn.Linear(64,32)]
         critic_layers += [nn.ReLU()]
-        critic_layers += [nn.Linear(64,1)]
+        critic_layers += [nn.Linear(32,1)]
         
         self.critic = nn.Sequential(*critic_layers)
         
@@ -95,7 +95,7 @@ class A2CNet(nn.Module):
         action_mean = self.actor(old_state)
         
         action_var = self.action_var.expand_as(action_mean)
-        cov_mat = torch.diag_embed(action_var).to(device)
+        cov_mat = torch.diag_embed(action_var).to(self.device)
         dist = MultivariateNormal(action_mean, cov_mat)
         
         action_log_probs = dist.log_prob(old_action)
@@ -110,7 +110,7 @@ class A2CNet(nn.Module):
 
 
 class Trainer():
-    def __init__(self, env, network, update_timestep = 2000, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01):
+    def __init__(self, env, network, update_timestep = 4000, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.memory = Memory()
         self.env = env
@@ -128,8 +128,9 @@ class Trainer():
         self.update_timestep = update_timestep
         
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.mse = nn.MSELoss()
         
-    def ppo_update(self):
+    def ppo_update(self, num_epochs):
         rewards = []
         discounted_reward = 0
         for reward, done in zip(reversed(self.memory.rewards), reversed(self.memory.dones)):
@@ -145,9 +146,9 @@ class Trainer():
         # convert list from memory to torch tensor
         old_states = torch.squeeze(torch.stack(self.memory.states).to(self.device), 1).detach()
         old_actions = torch.squeeze(torch.stack(self.memory.actions).to(self.device), 1).detach()
-        old_logprobs = torch.squeeze(torch.stack(self.memory.log_probs), 1).to(self.device).detach()
+        old_log_probs = torch.squeeze(torch.stack(self.memory.log_probs), 1).to(self.device).detach()
         
-        for _ in range(self.K_epochs):
+        for _ in range(num_epochs):
             #evaluate previous actions
             log_probs, state_values, dist_entropy = self.policy_net.evaluate(old_states, old_actions)
             
@@ -160,7 +161,7 @@ class Trainer():
             surr2 = torch.clamp(ratios, 1-self.epsilon, 1+self.epsilon) * advantages
             
             actor_loss = torch.min(surr1, surr2)
-            critic_loss = nn.MSELoss(state_values, rewards)
+            critic_loss = self.mse(state_values, rewards)
             
             # - because of gradient ascent
             loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
@@ -171,15 +172,15 @@ class Trainer():
             self.optimizer.step()
             
         #Set the new policy to be the old one by copying the weights.
-        self.policy_net_old.load_state_dict(self.policy_net.state_dict())
+        self.old_policy_net.load_state_dict(self.policy_net.state_dict())
             
-    def train(self, num_episodes, max_timesteps):
+    def train(self, num_episodes, num_epochs, max_timesteps, render=False):
         
         timestep = 0
         for i_episode in range(1, num_episodes+1):
             state = env.reset()
             running_reward = 0
-            for t in range(max_timesteps):
+            for i_timestep in range(max_timesteps):
                 timestep+=1
                 
                 state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
@@ -198,21 +199,34 @@ class Trainer():
                 
                 #Update policy network
                 if timestep % self.update_timestep == 0:
-                    self.ppo_update()
+                    print("Policy updated")
+                    self.ppo_update(num_epochs)
                     self.memory.clear()
+                    
+                if render:
+                    env.render()
          
                 if done:
+                    print('Episode {} Done, \t length: {} \t reward: {}'.format(i_episode, i_timestep, running_reward))
                     break
                     
-        print('Episode {} Done, \t length: {} \t reward: {}'.format(i_episode, i_timestep, running_reward))
-        
-        
-        # # stop training if avg_reward > solved_reward
-        # if running_reward > (log_interval*solved_reward):
-        #     print("########## Solved! ##########")
-        #     torch.save(ppo.policy.state_dict(), './PPO_{}.pth'.format(env_name))
-        #     break
-            
+#%%              
+def test(env, network):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    state = env.reset()
+    
+    sum_reward = 0
+    i = 0
+    while(i<500):
+        env.render()
+        action = network.actor(torch.tensor(state, dtype=torch.float, device=device))
+        print(action)
+        state, reward, done, _ = env.step(action.cpu().detach().numpy())
+        sum_reward += reward
+        i+=1
+    print("Testrun. Reward: {}".format(sum_reward))
+    env.close()
+#%%          
 
 
 env = gym.make('BipedalWalker-v3')
@@ -223,19 +237,10 @@ state_space_dim = env.observation_space.shape[0]
 action_space_dim = env.action_space.shape[0]
 network = A2CNet(state_space_dim, action_space_dim, action_std=0.5)
 
-trainer = Trainer(env, network)
-trainer.train(5000, 300)
+trainer = Trainer(env, network, lr=1e-5)
+trainer.train(num_episodes=100, num_epochs=80, max_timesteps=1500)
+
+test(env, network)
 
 
 
-
-# i=0
-# while(i<500):
-#     env.render()
-#     action = env.action_space.sample()
-#     observation, reward, done, _ = env.step(action)
-#     i+=1
-#     if(done):
-#         break
-        
-# env.close()
