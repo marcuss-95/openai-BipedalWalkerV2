@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Apr  1 09:01:44 2020
+Created on Thu Apr  9 09:37:30 2020
 
 @author: marcus
 """
@@ -14,40 +14,38 @@ import copy
 import torch
 import torch.nn as nn
 from torch.distributions import MultivariateNormal
+from collections import namedtuple
+import random
 
+Transition = namedtuple('Transition', ('state', 'action', 'reward', 'log_prob', 'done'))
 
-MAX_MEMORY_LENGTH = None
+class ReplayMemory():
+    '''
+    Memory to save state transistions for batch training.
+    '''
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
 
+    def push(self, sample):
+        """Saves a transition."""
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = sample
+        self.position = (self.position + 1) % self.capacity
 
-# class Memory():
-#     def __init__(self):
-#         self.states = deque([], maxlen = MAX_MEMORY_LENGTH)
-#         self.actions = deque([], maxlen = MAX_MEMORY_LENGTH)
-#         self.log_probs = deque([], maxlen = MAX_MEMORY_LENGTH)
-#         self.rewards = deque([], maxlen = MAX_MEMORY_LENGTH)
-#         self.dones = deque([], maxlen = MAX_MEMORY_LENGTH)
-    
-#     def clear(self):
-#         self.states.clear()
-#         self.action.clear()
-#         self.log_probs.clear()
-#         self.reward.clear()
-#         self.dones.clear()
+    def sample(self):
+        #return random.sample(self.memory, batch_size)
+        return Transition(*zip(*self.memory))
         
-class Memory:
-    def __init__(self):
-        self.actions = []
-        self.states = []
-        self.log_probs = []
-        self.rewards = []
-        self.dones = []
-    
     def clear(self):
-        del self.actions[:]
-        del self.states[:]
-        del self.log_probs[:]
-        del self.rewards[:]
-        del self.dones[:]
+        self.memory = []
+        self.position = 0
+    
+    def __len__(self):
+        return len(self.memory)
+    
 
 
 
@@ -60,19 +58,19 @@ class A2CNet(nn.Module):
         
         action_layers = []
         action_layers += [nn.Linear(state_space_dim,64)]
-        action_layers += [nn.ReLU()]
+        action_layers += [nn.Tanh()]
         action_layers += [nn.Linear(64,32)]
-        action_layers += [nn.ReLU()]
+        action_layers += [nn.Tanh()]
         action_layers += [nn.Linear(32,self.action_space_dim)]
-        action_layers += [nn.Softmax(dim=-1)]
+        action_layers += [nn.Tanh()]
         
         self.actor=nn.Sequential(*action_layers)
         
         critic_layers = []
         critic_layers += [nn.Linear(self.state_space_dim,64)]
-        critic_layers += [nn.ReLU()]
+        critic_layers += [nn.Tanh()]
         critic_layers += [nn.Linear(64,32)]
-        critic_layers += [nn.ReLU()]
+        critic_layers += [nn.Tanh()]
         critic_layers += [nn.Linear(32,1)]
         
         self.critic = nn.Sequential(*critic_layers)
@@ -87,9 +85,8 @@ class A2CNet(nn.Module):
         dist = MultivariateNormal(action_mean, cov_matrix)
         action = dist.sample().flatten()
         action_log_prob = dist.log_prob(action)
-        dist_entropy = dist.entropy()
         
-        return action, action_log_prob, dist_entropy
+        return action, action_log_prob
     
     def evaluate(self, old_state, old_action): 
         action_mean = self.actor(old_state)
@@ -102,7 +99,7 @@ class A2CNet(nn.Module):
         dist_entropy = dist.entropy()
         state_value = self.critic(old_state)
         
-        return action_log_probs, torch.squeeze(state_value), dist_entropy
+        return torch.squeeze(state_value), action_log_probs, dist_entropy
     
     def forward(self):
         raise NotImplementedError
@@ -110,16 +107,17 @@ class A2CNet(nn.Module):
 
 
 class Trainer():
-    def __init__(self, env, network, update_timestep = 4000, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01):
+    def __init__(self, env, network, update_timestep = 2000, batch_size=128, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01, capacity=5000):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.memory = Memory()
+        self.memory = ReplayMemory(capacity)
         self.env = env
         self.policy_net = network
         self.policy_net.to(self.device)
         
-        self.old_policy_net = copy.deepcopy(self.policy_net)
-        self.old_policy_net.load_state_dict(self.policy_net.state_dict())
+        # self.old_policy_net = copy.deepcopy(self.policy_net)
+        # self.old_policy_net.load_state_dict(self.policy_net.state_dict())
         
+        self.batch_size = batch_size
         self.gamma = gamma
         self.epsilon = epsilon
         self.c1 = c1
@@ -131,37 +129,47 @@ class Trainer():
         self.mse = nn.MSELoss()
         
     def ppo_update(self, num_epochs):
-        rewards = []
+        if len(self.memory) < self.batch_size:
+            return
+        
+        
+        #sample batch from memory
+        batch = self.memory.sample()
+        state_batch = torch.stack(batch.state).float()
+        action_batch = torch.stack(batch.action)
+        reward_batch = batch.reward
+        done_batch = batch.done
+        log_probs_batch = torch.cat(batch.log_prob)
+        
+        
+        q_values = []
         discounted_reward = 0
-        for reward, done in zip(reversed(self.memory.rewards), reversed(self.memory.dones)):
+        for reward, done in zip(reward_batch, done_batch):
             if done:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
-            rewards.insert(0, discounted_reward)
-            
-        #Normalize
-        rewards = torch.tensor(rewards).to(self.device)
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-9)
+            q_values.insert(0, discounted_reward)
         
-        # convert list from memory to torch tensor
-        old_states = torch.squeeze(torch.stack(self.memory.states).to(self.device), 1).detach()
-        old_actions = torch.squeeze(torch.stack(self.memory.actions).to(self.device), 1).detach()
-        old_log_probs = torch.squeeze(torch.stack(self.memory.log_probs), 1).to(self.device).detach()
+        
+        q_values = torch.tensor(q_values, device=self.device)
+        q_values = (q_values-q_values.mean())/(q_values.std()+1e-5)
         
         for _ in range(num_epochs):
-            #evaluate previous actions
-            log_probs, state_values, dist_entropy = self.policy_net.evaluate(old_states, old_actions)
+            
+            #evaluate previous states
+            state_values, log_probs, dist_entropy = self.policy_net.evaluate(state_batch, action_batch)
+            
             
             # Calculate ratio (pi_theta / pi_theta__old):
-            ratios = torch.exp(log_probs - old_log_probs.detach())
+            ratios = torch.exp(log_probs - log_probs_batch.detach())
                 
             # Calculate Surrogate Loss:
-            advantages = rewards - state_values.detach()
+            advantages = q_values - state_values.detach()
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.epsilon, 1+self.epsilon) * advantages
             
             actor_loss = torch.min(surr1, surr2)
-            critic_loss = self.mse(state_values, rewards)
+            critic_loss = self.mse(state_values, q_values)
             
             # - because of gradient ascent
             loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
@@ -171,8 +179,6 @@ class Trainer():
             loss.mean().backward()
             self.optimizer.step()
             
-        #Set the new policy to be the old one by copying the weights.
-        self.old_policy_net.load_state_dict(self.policy_net.state_dict())
             
     def train(self, num_episodes, num_epochs, max_timesteps, render=False):
         
@@ -181,34 +187,35 @@ class Trainer():
             state = env.reset()
             running_reward = 0
             for i_timestep in range(max_timesteps):
-                timestep+=1
+                timestep += 1
                 
                 state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
+                prev_state = state
                 
-                action, action_log_prob, dist_entropy = self.old_policy_net.act(state)
                 
-                self.memory.states.append(state)
-                self.memory.actions.append(action)
-                self.memory.log_probs.append(action_log_prob)
+                action, action_log_prob = self.policy_net.act(state)
+                
                 
                 state, reward, done, _ = env.step(action.cpu().numpy())
                 running_reward += reward
                 
-                self.memory.rewards.append(reward)
-                self.memory.dones.append(done)
+                transition = Transition(prev_state, action, reward, action_log_prob, done)
+                self.memory.push(transition)
                 
                 #Update policy network
                 if timestep % self.update_timestep == 0:
-                    print("Policy updated")
                     self.ppo_update(num_epochs)
+                    print("Policy updated")
                     self.memory.clear()
+                    # timestep=0
                     
                 if render:
                     env.render()
          
                 if done:
-                    print('Episode {} Done, \t length: {} \t reward: {}'.format(i_episode, i_timestep, running_reward))
                     break
+                
+            print('Episode {} Done, \t length: {} \t reward: {}'.format(i_episode, i_timestep, running_reward))
                     
 #%%              
 def test(env, network):
@@ -220,13 +227,32 @@ def test(env, network):
     while(i<500):
         env.render()
         action = network.actor(torch.tensor(state, dtype=torch.float, device=device))
-        print(action)
+        # print(action)
         state, reward, done, _ = env.step(action.cpu().detach().numpy())
         sum_reward += reward
         i+=1
     print("Testrun. Reward: {}".format(sum_reward))
     env.close()
 #%%          
+
+################################HYPERPARAMETERS################################
+
+num_episodes = 100
+num_epochs = 80
+max_timesteps = 1500
+
+
+lr = 1e-5
+
+
+###############################################################################
+
+
+
+
+
+
+
 
 
 env = gym.make('BipedalWalker-v3')
@@ -237,8 +263,8 @@ state_space_dim = env.observation_space.shape[0]
 action_space_dim = env.action_space.shape[0]
 network = A2CNet(state_space_dim, action_space_dim, action_std=0.5)
 
-trainer = Trainer(env, network, lr=1e-5)
-trainer.train(num_episodes=100, num_epochs=80, max_timesteps=1500)
+trainer = Trainer(env, network, lr=lr)
+trainer.train(num_episodes=num_episodes, num_epochs=num_epochs, max_timesteps=max_timesteps, render=True)
 
 test(env, network)
 
