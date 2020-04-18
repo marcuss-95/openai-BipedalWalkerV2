@@ -106,7 +106,7 @@ class A2CNet(nn.Module):
     def forward(self):
         raise NotImplementedError
         
-    def reduce_var(self):
+    def reduce_std(self):
         if self.action_std >= 0.05:
             self.action_std -= self.reduce_rate
             self.action_var = torch.full((self.action_space_dim,), self.action_std*self.action_std).to(self.device)
@@ -114,7 +114,7 @@ class A2CNet(nn.Module):
 
 class Trainer():
     def __init__(self, env, network, update_timestep = 2000, batch_size=512, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01,
-                 weight_decay=0.0, start_std=0.6, min_std=0.15):
+                 weight_decay=0.0, start_std=0.9, min_std=0.1):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.memory = ReplayMemory(update_timestep)
         self.env = env
@@ -130,6 +130,7 @@ class Trainer():
         self.start_std = start_std
         self.min_std = min_std
         
+    
         self.batch_size = batch_size
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr, weight_decay=weight_decay)
         self.mse = nn.MSELoss()
@@ -167,36 +168,40 @@ class Trainer():
         dataset = TensorDataset(exp_states, exp_actions, exp_log_probs, q_values)
         trainloader = DataLoader(dataset,batch_size=self.batch_size, shuffle=False)
         
-        for state_batch, action_batch, log_probs_batch, q_value_batch in trainloader:
-        
-            #evaluate previous states
-            state_values, log_probs, dist_entropy = self.policy_net.evaluate(state_batch, action_batch)
+        # self.loss_log = []
+        for _ in range(num_epochs):
+            for state_batch, action_batch, log_probs_batch, q_value_batch in trainloader:
             
-            
-            # Calculate ratio (pi_theta / pi_theta__old):
-            ratios = torch.exp(log_probs - log_probs_batch.detach())
+                #evaluate previous states
+                state_values, log_probs, dist_entropy = self.policy_net.evaluate(state_batch, action_batch)
                 
-            # Calculate Surrogate Loss:
-            advantages = q_value_batch - state_values.detach()
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1-self.epsilon, 1+self.epsilon) * advantages
-            
-            actor_loss = torch.min(surr1, surr2)
-            critic_loss = self.mse(state_values, q_value_batch)
-            
-            # - because of gradient ascent
-            loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
-            
-            # take gradient step
-            self.optimizer.zero_grad()
-            loss.mean().backward()
-            self.optimizer.step()
+                
+                # Calculate ratio (pi_theta / pi_theta__old):
+                ratios = torch.exp(log_probs - log_probs_batch.detach())
+                    
+                # Calculate Surrogate Loss:
+                advantages = q_value_batch - state_values.detach()
+                surr1 = ratios * advantages
+                surr2 = torch.clamp(ratios, 1-self.epsilon, 1+self.epsilon) * advantages
+                
+                actor_loss = torch.min(surr1, surr2)
+                critic_loss = self.mse(state_values, q_value_batch)
+                
+                # - because of gradient ascent
+                loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
+                
+                # self.loss_log.append(loss.mean())
+                
+                # take gradient step
+                self.optimizer.zero_grad()
+                loss.mean().backward()
+                self.optimizer.step()
             
             
     def train(self, num_episodes, num_epochs, max_timesteps, render=False):
         #set rate to reduce the std of the actor
         self.policy_net.reduce_rate = (self.start_std-self.min_std)/num_episodes
-        
+    
         timestep = 0
         for i_episode in range(1, num_episodes+1):
             state = env.reset()
@@ -233,9 +238,9 @@ class Trainer():
             self.reward_log.append(running_reward)
             self.time_log.append(i_timestep)
             
-            #TODO: Allow the switching off of the var reduction
-            #reduce variance to make actions less random over time
-            self.policy_net.reduce_var()
+            
+            #reduce std to make actions less random over time
+            self.policy_net.reduce_std()
             
     def plot_rewards(self):
         plt.plot(self.reward_log)
@@ -266,10 +271,9 @@ def test(env, network):
 num_episodes = 150
 num_epochs = 40
 max_timesteps = 1500
-update_timestep = 8192
-
+update_timestep = 4096
 render = False
-lr = 1e-4
+lr = 1e-5
 weight_decay = 0.0
 
 
