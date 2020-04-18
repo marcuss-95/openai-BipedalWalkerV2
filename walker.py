@@ -14,6 +14,7 @@ import copy
 import torch
 import torch.nn as nn
 from torch.distributions import MultivariateNormal
+from torch.utils.data import TensorDataset, DataLoader
 from collections import namedtuple
 import random
 import matplotlib.pyplot as plt
@@ -46,10 +47,8 @@ class ReplayMemory():
     
     def __len__(self):
         return len(self.memory)
+
     
-
-
-
 class A2CNet(nn.Module):
     def __init__(self, state_space_dim, action_space_dim, action_std):
         super(A2CNet,self).__init__()
@@ -114,8 +113,8 @@ class A2CNet(nn.Module):
     
 
 class Trainer():
-    def __init__(self, env, network, update_timestep = 2000, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01,
-                 weight_decay=0.0, start_std=0.5, min_std=0.1):
+    def __init__(self, env, network, update_timestep = 2000, batch_size=512, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01,
+                 weight_decay=0.0, start_std=0.6, min_std=0.15):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.memory = ReplayMemory(update_timestep)
         self.env = env
@@ -131,6 +130,7 @@ class Trainer():
         self.start_std = start_std
         self.min_std = min_std
         
+        self.batch_size = batch_size
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr, weight_decay=weight_decay)
         self.mse = nn.MSELoss()
         
@@ -142,19 +142,18 @@ class Trainer():
         
         self.num_updates += 1
         
-        #sample batch from memory
-        batch = self.memory.sample()
-        state_batch = torch.stack(batch.state).float()
-        action_batch = torch.stack(batch.action)
-        reward_batch = batch.reward
-        done_batch = batch.done
-        log_probs_batch = torch.cat(batch.log_prob)
+        experience = self.memory.sample()
+        exp_states = torch.stack(experience.state).float()
+        exp_actions = torch.stack(experience.action)
+        exp_rewards = experience.reward
+        exp_dones = experience.done
+        exp_log_probs = torch.cat(experience.log_prob)
         
         
         #calculate q-values
         q_values = []
         discounted_reward = 0
-        for reward, done in zip(reward_batch, done_batch):
+        for reward, done in zip(exp_rewards, exp_dones):
             if done:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
@@ -165,9 +164,10 @@ class Trainer():
         q_values = (q_values-q_values.mean())/(q_values.std()+1e-5)
         
         
-        for _ in range(num_epochs):
+        dataset = TensorDataset(exp_states, exp_actions, exp_log_probs, q_values)
+        trainloader = DataLoader(dataset,batch_size=self.batch_size, shuffle=False)
         
-        #TODO: use minibatches in training    
+        for state_batch, action_batch, log_probs_batch, q_value_batch in trainloader:
         
             #evaluate previous states
             state_values, log_probs, dist_entropy = self.policy_net.evaluate(state_batch, action_batch)
@@ -177,12 +177,12 @@ class Trainer():
             ratios = torch.exp(log_probs - log_probs_batch.detach())
                 
             # Calculate Surrogate Loss:
-            advantages = q_values - state_values.detach()
+            advantages = q_value_batch - state_values.detach()
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.epsilon, 1+self.epsilon) * advantages
             
             actor_loss = torch.min(surr1, surr2)
-            critic_loss = self.mse(state_values, q_values)
+            critic_loss = self.mse(state_values, q_value_batch)
             
             # - because of gradient ascent
             loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
@@ -233,6 +233,7 @@ class Trainer():
             self.reward_log.append(running_reward)
             self.time_log.append(i_timestep)
             
+            #TODO: Allow the switching off of the var reduction
             #reduce variance to make actions less random over time
             self.policy_net.reduce_var()
             
@@ -262,13 +263,14 @@ def test(env, network):
 
 ################################HYPERPARAMETERS################################
 
-num_episodes = 80
-num_epochs = 20
-max_timesteps = 1000
+num_episodes = 150
+num_epochs = 40
+max_timesteps = 1500
+update_timestep = 8192
 
 render = False
-lr = 5e-6
-weight_decay = 1e-5
+lr = 1e-4
+weight_decay = 0.0
 
 
 ###############################################################################
@@ -283,7 +285,7 @@ state_space_dim = env.observation_space.shape[0]
 action_space_dim = env.action_space.shape[0]
 network = A2CNet(state_space_dim, action_space_dim, action_std=0.5)
 
-trainer = Trainer(env, network, lr=lr, weight_decay=weight_decay)
+trainer = Trainer(env, network, update_timestep=update_timestep, lr=lr, weight_decay=weight_decay)
 trainer.train(num_episodes=num_episodes, num_epochs=num_epochs, max_timesteps=max_timesteps, render=render)
 
 test(env, network)
