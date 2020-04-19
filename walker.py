@@ -5,10 +5,6 @@ Created on Thu Apr  9 09:37:30 2020
 
 @author: marcus
 """
-
-from collections import deque
-
-
 import gym
 import copy
 import torch
@@ -84,24 +80,51 @@ class A2CNet(nn.Module):
         action_mean = self.actor(state)
         cov_matrix = torch.diag(self.action_var).to(self.device)
         
+        
         dist = MultivariateNormal(action_mean, cov_matrix)
         action = dist.sample().flatten()
         action_log_prob = dist.log_prob(action)
         
         return action, action_log_prob
     
+    
     def evaluate(self, old_state, old_action): 
-        action_mean = self.actor(old_state)
-        
-        action_var = self.action_var.expand_as(action_mean)
-        cov_mat = torch.diag_embed(action_var).to(self.device)
-        dist = MultivariateNormal(action_mean, cov_mat)
-        
-        action_log_probs = dist.log_prob(old_action)
-        dist_entropy = dist.entropy()
+        #TODO: Fix issue with wrong computation of log_probs
+        action_mean = self.actor(old_state).squeeze()
+        action_log_probs = torch.zeros(len(old_action), device=self.device)
+        dist_entropy = torch.zeros(len(old_action), device=self.device)
+        for i, am in enumerate(action_mean):
+            action_var = self.action_var.expand_as(am)
+            cov_mat = torch.diag(action_var).to(self.device)
+            dist = MultivariateNormal(am, cov_mat)
+            
+            #probability of old action under new policy
+           
+            action_log_probs[i] = dist.log_prob(old_action[i])
+            dist_entropy[i] = dist.entropy()
+            
         state_value = self.critic(old_state)
         
         return torch.squeeze(state_value), action_log_probs, dist_entropy
+    
+    
+    
+    # def evaluate(self, old_state, old_action): 
+    #     #TODO: Fix issue with wrong computation of log_probs
+    #     action_mean = self.actor(old_state)
+        
+    #     action_var = self.action_var.expand_as(action_mean)
+    #     cov_mat = torch.diag_embed(action_var).to(self.device)
+    #     dist = MultivariateNormal(action_mean, cov_mat)
+        
+        
+    #     #probability of old action under new policy
+       
+    #     action_log_probs = dist.log_prob(old_action)
+    #     dist_entropy = dist.entropy()
+    #     state_value = self.critic(old_state)
+        
+    #     return torch.squeeze(state_value), action_log_probs, dist_entropy
     
     def forward(self):
         raise NotImplementedError
@@ -148,7 +171,7 @@ class Trainer():
         exp_actions = torch.stack(experience.action)
         exp_rewards = experience.reward
         exp_dones = experience.done
-        exp_log_probs = torch.cat(experience.log_prob)
+        exp_log_probs = torch.stack(experience.log_prob)
         
         
         #calculate q-values
@@ -168,7 +191,6 @@ class Trainer():
         dataset = TensorDataset(exp_states, exp_actions, exp_log_probs, q_values)
         trainloader = DataLoader(dataset,batch_size=self.batch_size, shuffle=False)
         
-        # self.loss_log = []
         for _ in range(num_epochs):
             for state_batch, action_batch, log_probs_batch, q_value_batch in trainloader:
             
@@ -190,7 +212,6 @@ class Trainer():
                 # - because of gradient ascent
                 loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
                 
-                # self.loss_log.append(loss.mean())
                 
                 # take gradient step
                 self.optimizer.zero_grad()
@@ -273,7 +294,7 @@ num_epochs = 40
 max_timesteps = 1500
 update_timestep = 4096
 render = False
-lr = 1e-5
+lr = 3e-4
 weight_decay = 0.0
 
 
