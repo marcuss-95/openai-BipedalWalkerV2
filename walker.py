@@ -88,43 +88,23 @@ class A2CNet(nn.Module):
         return action, action_log_prob
     
     
+    
     def evaluate(self, old_state, old_action): 
         #TODO: Fix issue with wrong computation of log_probs
-        action_mean = self.actor(old_state).squeeze()
-        action_log_probs = torch.zeros(len(old_action), device=self.device)
-        dist_entropy = torch.zeros(len(old_action), device=self.device)
-        for i, am in enumerate(action_mean):
-            action_var = self.action_var.expand_as(am)
-            cov_mat = torch.diag(action_var).to(self.device)
-            dist = MultivariateNormal(am, cov_mat)
-            
-            #probability of old action under new policy
-           
-            action_log_probs[i] = dist.log_prob(old_action[i])
-            dist_entropy[i] = dist.entropy()
-            
+        action_mean = self.actor(old_state)
+        
+        action_var = self.action_var.expand_as(action_mean)
+        cov_mat = torch.diag_embed(action_var).to(self.device)
+        dist = MultivariateNormal(action_mean, cov_mat)
+        
+        
+        #probability of old action under new policy
+       
+        action_log_probs = dist.log_prob(old_action)
+        dist_entropy = dist.entropy()
         state_value = self.critic(old_state)
         
         return torch.squeeze(state_value), action_log_probs, dist_entropy
-    
-    
-    
-    # def evaluate(self, old_state, old_action): 
-    #     #TODO: Fix issue with wrong computation of log_probs
-    #     action_mean = self.actor(old_state)
-        
-    #     action_var = self.action_var.expand_as(action_mean)
-    #     cov_mat = torch.diag_embed(action_var).to(self.device)
-    #     dist = MultivariateNormal(action_mean, cov_mat)
-        
-        
-    #     #probability of old action under new policy
-       
-    #     action_log_probs = dist.log_prob(old_action)
-    #     dist_entropy = dist.entropy()
-    #     state_value = self.critic(old_state)
-        
-    #     return torch.squeeze(state_value), action_log_probs, dist_entropy
     
     def forward(self):
         raise NotImplementedError
@@ -137,7 +117,7 @@ class A2CNet(nn.Module):
 
 class Trainer():
     def __init__(self, env, network, update_timestep = 2000, batch_size=512, gamma=0.99, epsilon=0.2, c1=0.5, c2=0.01, lr=0.01,
-                 weight_decay=0.0, start_std=0.9, min_std=0.1):
+                 weight_decay=0.0,  min_std=0.1):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.memory = ReplayMemory(update_timestep)
         self.env = env
@@ -150,12 +130,10 @@ class Trainer():
         self.c2 = c2
         
         self.update_timestep = update_timestep
-        self.start_std = start_std
         self.min_std = min_std
         
-    
         self.batch_size = batch_size
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr, weight_decay=weight_decay)
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr, weight_decay=weight_decay, betas=(0.9,0.999))
         self.mse = nn.MSELoss()
         
         self.reward_log = []
@@ -167,7 +145,9 @@ class Trainer():
         self.num_updates += 1
         
         experience = self.memory.sample()
-        exp_states = torch.stack(experience.state).float()
+        #dimension of states need to be squeezed to not cause trouble in the  
+        #log_probs computation in the evaluate function.
+        exp_states = torch.stack(experience.state).squeeze().float()
         exp_actions = torch.stack(experience.action)
         exp_rewards = experience.reward
         exp_dones = experience.done
@@ -221,7 +201,7 @@ class Trainer():
             
     def train(self, num_episodes, num_epochs, max_timesteps, render=False):
         #set rate to reduce the std of the actor
-        self.policy_net.reduce_rate = (self.start_std-self.min_std)/num_episodes
+        self.policy_net.reduce_rate = (self.policy_net.action_std-self.min_std)/num_episodes
     
         timestep = 0
         for i_episode in range(1, num_episodes+1):
@@ -247,7 +227,11 @@ class Trainer():
                     self.ppo_update(num_epochs)
                     print("Policy updated")
                     self.memory.clear()
-                    # timestep=0
+                    #reduce std of a network to make action less random
+                    # self.policy_net.reduce_std()
+                    
+                    
+                    timestep=0
                     
                 if render:
                     env.render()
@@ -260,13 +244,9 @@ class Trainer():
             self.time_log.append(i_timestep)
             
             
-            #reduce std to make actions less random over time
-            self.policy_net.reduce_std()
             
     def plot_rewards(self):
         plt.plot(self.reward_log)
-        #plt.plot(self.time_log, "episode length")
-        #plt.legend()
         
 #%%              
 def test(env, network):
@@ -289,10 +269,10 @@ def test(env, network):
 
 ################################HYPERPARAMETERS################################
 
-num_episodes = 150
-num_epochs = 40
+num_episodes = 100
+num_epochs = 70
 max_timesteps = 1500
-update_timestep = 4096
+update_timestep = 4000
 render = False
 lr = 3e-4
 weight_decay = 0.0
