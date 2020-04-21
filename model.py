@@ -25,6 +25,7 @@ class A2CNet(nn.Module):
         
         action_layers = []
         action_layers += [nn.Linear(32,32)]
+        action_layers += [nn.Tanh()]
         action_layers += [nn.Linear(32,self.action_space_dim)]
         #actions are constrained to be in the range [-1,1]
         action_layers += [nn.Tanh()]
@@ -33,6 +34,7 @@ class A2CNet(nn.Module):
         
         critic_layers = []
         critic_layers += [nn.Linear(32,32)]
+        action_layers += [nn.Tanh()]
         critic_layers += [nn.Linear(32,1)]
         
         self.critic = nn.Sequential(*body_layers,*critic_layers)
@@ -42,7 +44,8 @@ class A2CNet(nn.Module):
         #self.action_std = nn.Parameter(torch.zeros(self.action_space_dim))
         #self.action_var = torch.full((self.action_space_dim,), self.action_std*self.action_std).to(self.device)
         
-        self.action_var = nn.Parameter(torch.full((self.action_space_dim,), action_std*action_std), requires_grad=True).to(self.device)
+        # self.action_var = nn.Parameter(torch.full((self.action_space_dim,), action_std*action_std), requires_grad=True).to(self.device)
+        self.register_parameter("action_var",nn.Parameter(torch.full((self.action_space_dim,), action_std*action_std), requires_grad=True))
         
     def act(self, state):
         action_mean = self.actor(state)
