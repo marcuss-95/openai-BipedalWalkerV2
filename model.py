@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.distributions import MultivariateNormal
 
 class A2CNet(nn.Module):
-    def __init__(self, state_space_dim, action_space_dim, action_std):
+    def __init__(self, state_space_dim, action_space_dim, action_std, std_trainable=True):
         super(A2CNet,self).__init__()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.state_space_dim = state_space_dim
@@ -45,7 +45,7 @@ class A2CNet(nn.Module):
         #self.action_var = torch.full((self.action_space_dim,), self.action_std*self.action_std).to(self.device)
         
         # self.action_var = nn.Parameter(torch.full((self.action_space_dim,), action_std*action_std), requires_grad=True).to(self.device)
-        self.register_parameter("action_var",nn.Parameter(torch.full((self.action_space_dim,), action_std*action_std), requires_grad=True))
+        self.register_parameter("action_var",nn.Parameter(torch.full((self.action_space_dim,), action_std*action_std), requires_grad=std_trainable))
         
     def act(self, state):
         action_mean = self.actor(state)

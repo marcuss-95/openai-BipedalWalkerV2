@@ -34,6 +34,7 @@ class Trainer():
         self.mse = nn.MSELoss()
         
         self.reward_log = []
+        self.loss_log = []
         self.time_log = []
         self.num_updates = 0
         
@@ -48,7 +49,7 @@ class Trainer():
         exp_actions = torch.stack(experience.action)
         exp_rewards = experience.reward
         exp_dones = experience.done
-        exp_log_probs = torch.stack(experience.log_prob)
+        exp_log_probs = torch.stack(experience.log_prob).squeeze()
         
         
         #calculate q-values
@@ -68,6 +69,8 @@ class Trainer():
         dataset = TensorDataset(exp_states, exp_actions, exp_log_probs, q_values)
         trainloader = DataLoader(dataset,batch_size=self.batch_size, shuffle=False)
         
+        train_loss = 0
+        num_iterations = 0
         for _ in range(num_epochs):
             for state_batch, action_batch, log_probs_batch, q_value_batch in trainloader:
             
@@ -89,17 +92,17 @@ class Trainer():
                 # - because of gradient ascent
                 loss = -actor_loss + self.c1*critic_loss - self.c2*dist_entropy
                 
+                train_loss += loss.mean()
                 
                 # take gradient step
                 self.optimizer.zero_grad()
                 loss.mean().backward()
                 self.optimizer.step()
+                num_iterations += 1
             
+        self.loss_log.append(train_loss/num_iterations)
             
     def train(self, num_episodes, num_epochs, max_timesteps, render=False):
-        #set rate to reduce the std of the actor
-        #self.policy_net.reduce_rate = (self.policy_net.action_std-self.min_std)/num_episodes
-    
         timestep = 0
         for i_episode in range(1, num_episodes+1):
             state = self.env.reset()
@@ -122,12 +125,8 @@ class Trainer():
                 #Update policy network
                 if timestep % self.update_timestep == 0:
                     self.ppo_update(num_epochs)
-                    print("Policy updated")
+                    print("Policy updated, action_var={}".format(self.policy_net.action_var.data))
                     self.memory.clear()
-                    #reduce std of a network to make action less random
-                    # self.policy_net.reduce_std()
-                    
-                    
                     timestep=0
                     
                 if render:
@@ -140,7 +139,8 @@ class Trainer():
             self.reward_log.append(running_reward)
             self.time_log.append(i_timestep)
             
-            
-            
     def plot_rewards(self):
         plt.plot(self.reward_log)
+        
+    def plot_loss(self):
+        plt.plot(self.loss_log)

@@ -42,10 +42,10 @@ num_epochs = 70
 max_timesteps = 1500
 update_timestep = 4000
 render = False
-lr = 7e-6
+lr = 1e-4
 weight_decay = 0.0
-c2 = 0.0
-
+c2 = 0.01
+std_trainable = False
 ###############################################################################
 
 
@@ -56,7 +56,7 @@ observation = env.reset()
 #only for 1-dim and action state space
 state_space_dim = env.observation_space.shape[0]
 action_space_dim = env.action_space.shape[0]
-network = A2CNet(state_space_dim, action_space_dim, action_std=0.5)
+network = A2CNet(state_space_dim, action_space_dim, action_std=0.5, std_trainable=std_trainable)
 
 trainer = Trainer(env, network, update_timestep=update_timestep, lr=lr, weight_decay=weight_decay, batch_size=batch_size, c2=c2)
 trainer.train(num_episodes=num_episodes, num_epochs=num_epochs, max_timesteps=max_timesteps, render=render)
