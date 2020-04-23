@@ -39,6 +39,7 @@ class Trainer():
         self.num_updates = 0
         
     def ppo_update(self, num_epochs):
+        #TODO: Fix wrong calculation of q_values
         
         self.num_updates += 1
         
@@ -51,11 +52,11 @@ class Trainer():
         exp_dones = experience.done
         exp_log_probs = torch.stack(experience.log_prob).squeeze()
         
-        
+
         #calculate q-values
         q_values = []
         discounted_reward = 0
-        for reward, done in zip(exp_rewards, exp_dones):
+        for reward, done in zip(reversed(exp_rewards), reversed(exp_dones)):
             if done:
                 discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
@@ -76,7 +77,6 @@ class Trainer():
             
                 #evaluate previous states
                 state_values, log_probs, dist_entropy = self.policy_net.evaluate(state_batch, action_batch)
-                
                 
                 # Calculate ratio (pi_theta / pi_theta__old):
                 ratios = torch.exp(log_probs - log_probs_batch.detach())
@@ -125,7 +125,7 @@ class Trainer():
                 #Update policy network
                 if timestep % self.update_timestep == 0:
                     self.ppo_update(num_epochs)
-                    print("Policy updated, action_var={}".format(self.policy_net.action_var.data))
+                    print("Policy updated")
                     self.memory.clear()
                     timestep=0
                     
@@ -136,7 +136,7 @@ class Trainer():
                     break
             
             print('Episode {} Done, \t length: {} \t reward: {}'.format(i_episode, i_timestep, running_reward))
-            self.reward_log.append(running_reward)
+            self.reward_log.append(int(running_reward))
             self.time_log.append(i_timestep)
             
     def plot_rewards(self):
